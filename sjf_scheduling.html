@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SJF and SRTF Scheduling Simulator</title>
+<style>
+:root{
+  --bg:#f3f5f4; --surface:#ffffff; --ink:#16241f; --muted:#5b6b64; --line:#d3dbd7;
+  --accent:#0f6b57; --accent-ink:#ffffff; --danger:#b3261e; --idle:#e4e9e6;
+}
+@media (prefers-color-scheme: dark){
+  :root{ --bg:#0f1815; --surface:#17231f; --ink:#e6efeb; --muted:#93a59d; --line:#2b3b35;
+         --accent:#4cc9a6; --accent-ink:#06130f; --danger:#ff8a80; --idle:#22312b; }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 Georgia,"Times New Roman",serif}
+main{max-width:1000px;margin:0 auto;padding:32px 20px 64px}
+h1{font-size:1.9rem;margin:0 0 4px;letter-spacing:-.01em}
+h2{font-size:1.2rem;margin:0 0 12px}
+.sub{color:var(--muted);margin:0 0 28px;max-width:62ch}
+section{background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:20px;margin-bottom:20px}
+table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
+th{font-weight:600;color:var(--muted);font-size:.9rem}
+td.num{text-align:right} th.num{text-align:right}
+input[type=number]{width:96px;padding:6px 8px;font:inherit;color:var(--ink);background:var(--bg);
+  border:1px solid var(--line);border-radius:4px}
+input:focus-visible,button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:14px}
+button,select{font:inherit;padding:8px 14px;border-radius:4px;border:1px solid var(--line);
+  background:var(--surface);color:var(--ink);cursor:pointer}
+button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600}
+button.ghost{border-color:transparent;color:var(--danger);padding:4px 8px}
+.error{color:var(--danger);margin-top:10px;min-height:1.4em}
+.scroll{overflow-x:auto;padding-bottom:6px}
+.gantt{display:flex;height:48px;margin-top:6px}
+.blk{height:100%;display:flex;align-items:center;justify-content:center;color:#fff;font-size:.85rem;
+  border-right:1px solid rgba(255,255,255,.7);overflow:hidden;white-space:nowrap;font-weight:600}
+.blk.idle{background:repeating-linear-gradient(45deg,var(--idle),var(--idle) 6px,transparent 6px,transparent 12px);
+  color:var(--muted);border-right-color:var(--line)}
+.ticks{position:relative;height:22px;font-size:.78rem;color:var(--muted);font-variant-numeric:tabular-nums}
+.ticks span{position:absolute;top:2px;transform:translateX(-50%)}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-top:18px}
+.stat{border-left:3px solid var(--accent);padding:2px 12px}
+.stat b{display:block;font-size:1.3rem;font-variant-numeric:tabular-nums}
+.stat span{color:var(--muted);font-size:.88rem}
+.verdict{margin-top:14px;color:var(--muted)}
+.win{font-weight:700;color:var(--accent)}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<main>
+  <h1>SJF and SRTF Scheduling Simulator</h1>
+  <p class="sub">Enter each process's arrival and burst time, then compare Non-Preemptive Shortest Job First with Preemptive Shortest Remaining Time First. Assumes one CPU core and times in milliseconds.</p>
+
+  <section>
+    <h2>Processes</h2>
+    <table>
+      <thead><tr><th>Process</th><th>Arrival time (0&ndash;1000)</th><th>Burst time (1&ndash;1000)</th><th></th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div class="row">
+      <button id="add" type="button">Add process</button>
+      <button id="sample" type="button">Load example</button>
+      <label>Algorithm
+        <select id="algo">
+          <option value="1">Non-Preemptive SJF</option>
+          <option value="2">Preemptive SJF (SRTF)</option>
+          <option value="3" selected>Both (compare)</option>
+        </select>
+      </label>
+      <button id="run" class="primary" type="button">Run simulation</button>
+    </div>
+    <div class="error" id="err" role="alert"></div>
+  </section>
+
+  <div id="results"></div>
+</main>
+
+<script>
+const MAX_PROCESSES = 20, MAX_TIME = 1000, IDLE = 0;
+const COLORS = ['#0f6b57','#b4531f','#3a5fa8','#8a3f8f','#a07d00','#2a7f9e','#a63d57','#5f7a1f','#6b4fb3','#0e7c7b',
+                '#c0662b','#44648c','#7a3b2e','#3d8b3d','#8c5a9c','#2f6f8f','#b0463a','#5c6f2a','#556bb0','#8f6a1c'];
+
+const rowsEl = document.getElementById('rows');
+const errEl = document.getElementById('err');
+const addBtn = document.getElementById('add');
+
+/* ---------- Input table ---------- */
+function addRow(at = '', bt = '') {
+  if (rowsEl.children.length >= MAX_PROCESSES) return;
+  const tr = document.createElement('tr');
+  tr.innerHTML = `<td class="pid"></td>
+    <td><input type="number" class="at" min="0" max="${MAX_TIME}" step="1" value="${at}" aria-label="Arrival time"></td>
+    <td><input type="number" class="bt" min="1" max="${MAX_TIME}" step="1" value="${bt}" aria-label="Burst time"></td>
+    <td><button type="button" class="ghost">Remove</button></td>`;
+  tr.querySelector('button').addEventListener('click', () => {
+    if (rowsEl.children.length > 1) { tr.remove(); renumber(); }
+  });
+  rowsEl.appendChild(tr);
+  renumber();
+}
+function renumber() {
+  [...rowsEl.children].forEach((tr, i) => tr.querySelector('.pid').textContent = 'P' + (i + 1));
+  addBtn.disabled = rowsEl.children.length >= MAX_PROCESSES;
+}
+function loadSample() {
+  rowsEl.innerHTML = '';
+  [[0,8],[1,4],[2,9],[3,5]].forEach(([a,b]) => addRow(a, b));
+}
+
+/* Reads and validates the table. Returns an array of processes or null. */
+function readProcesses() {
+  const list = [];
+  for (const [i, tr] of [...rowsEl.children].entries()) {
+    const a = tr.querySelector('.at').value.trim();
+    const b = tr.querySelector('.bt').value.trim();
+    const at = Number(a), bt = Number(b);
+    if (a === '' || !Number.isInteger(at) || at < 0 || at > MAX_TIME)
+      return fail(`P${i+1} arrival time must be a whole number from 0 to ${MAX_TIME}.`);
+    if (b === '' || !Number.isInteger(bt) || bt < 1 || bt > MAX_TIME)
+      return fail(`P${i+1} burst time must be a whole number from 1 to ${MAX_TIME}.`);
+    list.push({ pid: i + 1, arrival: at, burst: bt });
+  }
+  errEl.textContent = '';
+  return list;
+}
+function fail(msg) { errEl.textContent = msg; return null; }
+
+/* ---------- Scheduling core (ported from the C program) ---------- */
+function fresh(input) {
+  return input.map(p => ({ ...p, remaining: p.burst, completion: 0, turnaround: 0,
+                           waiting: 0, response: -1, done: false }));
+}
+function addSegment(gantt, pid, start, end) {
+  if (end <= start) return;
+  const last = gantt[gantt.length - 1];
+  if (last && last.pid === pid && last.end === start) { last.end = end; return; }
+  gantt.push({ pid, start, end });
+}
+/* Ties: earlier arrival, then lower pid (array order). */
+function pickShortest(p, time, useRemaining) {
+  let best = -1;
+  for (let i = 0; i < p.length; i++) {
+    if (p[i].done || p[i].arrival > time) continue;
+    if (best === -1) { best = i; continue; }
+    const key = useRemaining ? p[i].remaining : p[i].burst;
+    const bestKey = useRemaining ? p[best].remaining : p[best].burst;
+    if (key < bestKey || (key === bestKey && p[i].arrival < p[best].arrival)) best = i;
+  }
+  return best;
+}
+function nextArrivalAfter(p, time) {
+  let next = -1;
+  for (const q of p) if (!q.done && q.arrival > time && (next === -1 || q.arrival < next)) next = q.arrival;
+  return next;
+}
+function finish(p, time) {
+  p.completion = time;
+  p.turnaround = time - p.arrival;
+  p.waiting = p.turnaround - p.burst;
+  p.done = true;
+}
+function countContextSwitches(gantt) {
+  let last = IDLE, n = 0;
+  for (const s of gantt) {
+    if (s.pid === IDLE) continue;
+    if (last !== IDLE && s.pid !== last) n++;
+    last = s.pid;
+  }
+  return n;
+}
+function computeMetrics(p, gantt) {
+  const n = p.length;
+  const sum = k => p.reduce((s, x) => s + x[k], 0);
+  const totalTime = Math.max(...p.map(x => x.completion));
+  const busy = gantt.filter(s => s.pid !== IDLE).reduce((s, g) => s + g.end - g.start, 0);
+  return { avgWT: sum('waiting') / n, avgTAT: sum('turnaround') / n, avgRT: sum('response') / n,
+           throughput: n / totalTime, utilization: 100 * busy / totalTime,
+           contextSwitches: countContextSwitches(gantt), totalTime };
+}
+function nonPreemptiveSJF(input) {
+  const p = fresh(input), gantt = [];
+  let time = 0, completed = 0;
+  while (completed < p.length) {
+    const best = pickShortest(p, time, false);
+    if (best === -1) {
+      const next = nextArrivalAfter(p, time);
+      addSegment(gantt, IDLE, time, next); time = next; continue;
+    }
+    p[best].response = time - p[best].arrival;
+    addSegment(gantt, p[best].pid, time, time + p[best].burst);
+    time += p[best].burst;
+    finish(p[best], time); completed++;
+  }
+  return { title: 'Non-Preemptive SJF', p, gantt, m: computeMetrics(p, gantt) };
+}
+function preemptiveSRTF(input) {
+  const p = fresh(input), gantt = [];
+  let time = 0, completed = 0;
+  while (completed < p.length) {
+    const best = pickShortest(p, time, true);
+    if (best === -1) {
+      const next = nextArrivalAfter(p, time);
+      addSegment(gantt, IDLE, time, next); time = next; continue;
+    }
+    if (p[best].response === -1) p[best].response = time - p[best].arrival;
+    addSegment(gantt, p[best].pid, time, time + 1);   // run 1 unit, then re-evaluate
+    p[best].remaining--; time++;
+    if (p[best].remaining === 0) { finish(p[best], time); completed++; }
+  }
+  return { title: 'Preemptive SJF (SRTF)', p, gantt, m: computeMetrics(p, gantt) };
+}
+
+/* ---------- Rendering ---------- */
+const f2 = x => x.toFixed(2);
+
+function renderGantt(gantt) {
+  const total = gantt[gantt.length - 1].end;
+  const px = Math.max(4, Math.min(48, 900 / total));
+  const blocks = gantt.map(s => {
+    const w = (s.end - s.start) * px;
+    const label = s.pid === IDLE ? 'Idle' : 'P' + s.pid;
+    const style = `width:${w}px;` + (s.pid === IDLE ? '' : `background:${COLORS[(s.pid - 1) % COLORS.length]}`);
+    return `<div class="blk${s.pid === IDLE ? ' idle' : ''}" style="${style}" title="${label}: ${s.start}\u2013${s.end}">${w >= 28 ? label : ''}</div>`;
+  }).join('');
+  const times = [gantt[0].start, ...gantt.map(s => s.end)];
+  let lastX = -100;
+  const ticks = times.map(t => {
+    const x = t * px - gantt[0].start * px;
+    if (x - lastX < 22) return '';
+    lastX = x;
+    return `<span style="left:${x}px">${t}</span>`;
+  }).join('');
+  return `<div class="scroll"><div style="width:${(total - gantt[0].start) * px + 20}px">
+    <div class="gantt">${blocks}</div><div class="ticks">${ticks}</div></div></div>`;
+}
+
+function renderResult(r) {
+  const rows = r.p.map(x => `<tr><td>P${x.pid}</td><td class="num">${x.arrival}</td><td class="num">${x.burst}</td>
+    <td class="num">${x.completion}</td><td class="num">${x.turnaround}</td><td class="num">${x.waiting}</td>
+    <td class="num">${x.response}</td></tr>`).join('');
+  const m = r.m;
+  return `<section><h2>${r.title}</h2>
+    ${renderGantt(r.gantt)}
+    <table style="margin-top:14px"><thead><tr><th>Process</th><th class="num">AT</th><th class="num">BT</th>
+      <th class="num">CT</th><th class="num">TAT</th><th class="num">WT</th><th class="num">RT</th></tr></thead>
+      <tbody>${rows}</tbody></table>
+    <div class="stats">
+      <div class="stat"><b>${f2(m.avgWT)} ms</b><span>Average waiting time</span></div>
+      <div class="stat"><b>${f2(m.avgTAT)} ms</b><span>Average turnaround time</span></div>
+      <div class="stat"><b>${f2(m.avgRT)} ms</b><span>Average response time</span></div>
+      <div class="stat"><b>${m.contextSwitches}</b><span>Context switches</span></div>
+      <div class="stat"><b>${m.throughput.toFixed(3)}</b><span>Throughput (processes/ms)</span></div>
+      <div class="stat"><b>${f2(m.utilization)}%</b><span>CPU utilization</span></div>
+    </div></section>`;
+}
+
+function renderComparison(a, b) {
+  const row = (name, x, y, fmt) => `<tr><td>${name}</td><td class="num">${fmt(x)}</td><td class="num">${fmt(y)}</td></tr>`;
+  let verdict = a.avgWT < b.avgWT ? 'Non-Preemptive SJF' : b.avgWT < a.avgWT ? 'Preemptive SRTF' : null;
+  let cs = a.contextSwitches !== b.contextSwitches
+    ? (a.contextSwitches < b.contextSwitches ? 'Non-Preemptive SJF' : 'Preemptive SRTF') : null;
+  return `<section><h2>Comparison</h2>
+    <table><thead><tr><th>Metric</th><th class="num">Non-Preemptive</th><th class="num">Preemptive SRTF</th></tr></thead><tbody>
+      ${row('Avg waiting time (ms)', a.avgWT, b.avgWT, f2)}
+      ${row('Avg turnaround (ms)', a.avgTAT, b.avgTAT, f2)}
+      ${row('Avg response (ms)', a.avgRT, b.avgRT, f2)}
+      ${row('Context switches', a.contextSwitches, b.contextSwitches, v => v)}
+      ${row('Throughput (proc/ms)', a.throughput, b.throughput, v => v.toFixed(3))}
+      ${row('CPU utilization (%)', a.utilization, b.utilization, f2)}
+    </tbody></table>
+    <p class="verdict">${verdict ? `Lower average waiting time: <span class="win">${verdict}</span>` : 'Both algorithms give the same average waiting time.'}
+    ${cs ? `<br>Fewer context switches: <span class="win">${cs}</span>` : ''}</p></section>`;
+}
+
+function run() {
+  const input = readProcesses();
+  if (!input) return;
+  const choice = document.getElementById('algo').value;
+  const out = document.getElementById('results');
+  if (choice === '1') out.innerHTML = renderResult(nonPreemptiveSJF(input));
+  else if (choice === '2') out.innerHTML = renderResult(preemptiveSRTF(input));
+  else {
+    const a = nonPreemptiveSJF(input), b = preemptiveSRTF(input);
+    out.innerHTML = renderResult(a) + renderResult(b) + renderComparison(a.m, b.m);
+  }
+  out.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+addBtn.addEventListener('click', () => addRow());
+document.getElementById('sample').addEventListener('click', loadSample);
+document.getElementById('run').addEventListener('click', run);
+loadSample();
+</script>
+</body>
+</html>
